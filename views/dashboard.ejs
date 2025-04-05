@@ -1,0 +1,16 @@
+<!DOCTYPE html>
+<html lang="en">
+<%- include('includes/head.ejs') %>
+<body>
+    <%- include('includes/header.ejs') %>
+    <main>
+        <h2>Welcome to your dashboard</h2>
+        <ul>
+            <% posts.forEach(post => { %>
+               <li><a href="/post/<%= post.id %>"><%= post.title %></a> on <%= new Date(post.createdDate).getMonth() + 1 %>/<%= new Date(post.createdDate).getDate() %>/<%= new Date(post.createdDate).getFullYear() %></li> 
+            <% }) %>
+        </ul>
+    </main>
+    <%- include('includes/footer.ejs') %>
+</body>
+</html>

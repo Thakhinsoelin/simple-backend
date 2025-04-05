@@ -6,7 +6,10 @@ use rocket::fs::{FileServer, NamedFile};
 use rocket::tokio::io::AsyncWriteExt;
 use rocket::serde::Deserialize;
 use serde_json::Value;
+use simple_backend;
 
+#[allow(non_snake_case)]
+mod AppState;
 #[derive(Debug, Deserialize)]
 pub struct Holiday {
     pub date: String,
@@ -42,10 +45,6 @@ pub struct ApiResponse {
     pub server_time: String,
 }
 
-#[get("/")]
-fn bba() -> String {
-    "Hello, World".to_owned()
-}
 
 #[get("/fetch2d")]
 async fn fetch() -> Result<String, String> {
@@ -113,12 +112,15 @@ async fn get_pdf() -> Option<NamedFile> {
 
 #[launch]
 fn rocket() -> _ {
+    
+
     rocket::build()
-    .mount("/", routes![bba, get_pdf, fetch])
+    .mount("/", routes![simple_backend::index, get_pdf, fetch])
     .mount("/hello", routes![world])
     .mount("/hi", routes![world])
     .mount("/getfile", routes![return_file_content])
     .mount("/", FileServer::from("files"))
+    .configure(rocket::Config::figment().merge(("address", "0.0.0.0")))
     
 }
 
