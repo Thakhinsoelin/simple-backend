@@ -1,13 +1,13 @@
 <!DOCTYPE html>
 <html lang="en">
-<%- include('includes/head.ejs') %>
+{% include "includes/head.html" %}
 <body>
-    <%- include('includes/header.ejs') %>
+    {% include "includes/header.html" %}
     <main>
         <form action="/register" method="POST">
-            <% error.forEach(error => { %>
-                <p class="notice"><%= error %></p>
-            <% }) %>
+            {% for error in errors %}
+                <p class="notice">{{error}}</p>
+            {% endfor %}
             <fieldset>
                 <legend>Create An Account</legend>
                 <label for="username" ><small>Username</small></label>
@@ -21,6 +21,6 @@
             </fieldset>
         </form>
     </main>
-    <%- include('includes/footer.ejs') %>
+    {% include "includes/footer.html" %}
 </body>
 </html>

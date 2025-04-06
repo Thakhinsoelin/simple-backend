@@ -1,4 +1,5 @@
 use std::sync::Mutex;
 
-pub struct AppState {
-}
+use sqlite::Connection;
+
+pub struct DbConn(pub Mutex<Connection>);

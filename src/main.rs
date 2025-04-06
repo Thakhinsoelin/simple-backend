@@ -1,5 +1,6 @@
 use std::io;
 use std::path::Path;
+use std::sync::Mutex;
 // https://rocket.rs/guide/v0.5/overview/
 #[macro_use] extern crate rocket;
 use rocket::fs::{FileServer, NamedFile};
@@ -7,6 +8,9 @@ use rocket::tokio::io::AsyncWriteExt;
 use rocket::serde::Deserialize;
 use serde_json::Value;
 use simple_backend;
+use sqlite::{self, Connection};
+
+
 
 #[allow(non_snake_case)]
 mod AppState;
@@ -112,14 +116,30 @@ async fn get_pdf() -> Option<NamedFile> {
 
 #[launch]
 fn rocket() -> _ {
-    
+    let conn = Connection::open("OurApp.db").expect("Failed to open database");
+    let query = "CREATE TABLE IF NOT EXISTS users (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    username STRING NOT NULL UNIQUE,
+    password STRING NOT NULL
+    )";
+    let query2 = "CREATE TABLE IF NOT EXISTS posts (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        createdDate TEXT,
+        title STRING NOT NULL,
+        body TEXT NOT NULL,
+        authorid INTEGER,
+        FOREIGN KEY (authorid) REFERENCES users (id)
+        )";
+    conn.execute(query).unwrap();
+    conn.execute(query2).unwrap();
 
     rocket::build()
-    .mount("/", routes![simple_backend::index, get_pdf, fetch])
+    .manage(AppState::DbConn(Mutex::new(conn)))
+    .mount("/", routes![simple_backend::index, get_pdf, fetch, simple_backend::render_login])
     .mount("/hello", routes![world])
     .mount("/hi", routes![world])
     .mount("/getfile", routes![return_file_content])
-    .mount("/", FileServer::from("files"))
+    .mount("/", FileServer::from("public"))
     .configure(rocket::Config::figment().merge(("address", "0.0.0.0")))
     
 }
