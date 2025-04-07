@@ -10,10 +10,10 @@ use serde_json::Value;
 use simple_backend;
 use sqlite::{self, Connection};
 
-
-
-#[allow(non_snake_case)]
 mod AppState;
+use AppState::DbConn;
+
+
 #[derive(Debug, Deserialize)]
 pub struct Holiday {
     pub date: String,
@@ -116,7 +116,7 @@ async fn get_pdf() -> Option<NamedFile> {
 
 #[launch]
 fn rocket() -> _ {
-    let conn = Connection::open("OurApp.db").expect("Failed to open database");
+    let conns = Connection::open("OurApp.db").expect("Failed to open database");
     let query = "CREATE TABLE IF NOT EXISTS users (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     username STRING NOT NULL UNIQUE,
@@ -130,15 +130,18 @@ fn rocket() -> _ {
         authorid INTEGER,
         FOREIGN KEY (authorid) REFERENCES users (id)
         )";
-    conn.execute(query).unwrap();
-    conn.execute(query2).unwrap();
+    conns.execute(query).expect("Failed to execute table");
+    conns.execute(query2).expect("Failed to execute table2");
 
     rocket::build()
-    .manage(AppState::DbConn(Mutex::new(conn)))
-    .mount("/", routes![simple_backend::index, get_pdf, fetch, simple_backend::render_login])
-    .mount("/hello", routes![world])
-    .mount("/hi", routes![world])
-    .mount("/getfile", routes![return_file_content])
+    .attach(simple_backend::stage(conns))
+    // .mount("/", routes![simple_backend::index, simple_backend::render_login])
+    // .manage(DbConn {
+    //     conn: Mutex::new(conns)
+    // })
+    // .mount("/hello", routes![world])
+    // .mount("/hi", routes![world])
+    // .mount("/getfile", routes![return_file_content])
     .mount("/", FileServer::from("public"))
     .configure(rocket::Config::figment().merge(("address", "0.0.0.0")))
     
