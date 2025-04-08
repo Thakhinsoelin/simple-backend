@@ -1,8 +1,9 @@
 #[macro_use] extern crate rocket;
 
 use std::{sync::Mutex, time::{SystemTime, UNIX_EPOCH}};
-
-use rocket::{error, http::Header};
+use cookie::time::Duration;
+use jsonwebtoken::{encode, EncodingKey};
+use rocket::{error, http::{private::cookie, Header, Status}, response::Redirect};
 use tera::{Context, Tera};
 use lazy_static::lazy_static;
 use serde::{Serialize, Deserialize};
@@ -107,8 +108,33 @@ pub async fn index(state: &State<DbConn>) -> Result<RawHtml<String>, String> {
 }
 
 #[get("/login")]
-pub async fn render_login(state: &State<DbConn>) -> Result<RawHtml<String>, String> {
-    
+pub async fn render_login(state: &State<DbConn>, /*jar: &CookieJar<'_>*/) -> Result<RawHtml<String>, String> {
+    // {let expiration = SystemTime::now()
+    //     .duration_since(UNIX_EPOCH)
+    //     .unwrap()
+    //     .as_secs()
+    //     + 60 * 60 * 24; // 24 hours
+
+    //     let claims = Claims {
+    //         exp: expiration as usize,
+    //         skyColor: "Blue".to_string(),
+    //         userid: 7,
+    //         username: "soethiha".to_owned(),
+    //     };
+    //     let jwtkey = dotenv::var("JWTSECRET").map_err(|err| err.to_string())?;
+    //     let header = jsonwebtoken::Header::default();
+    //     // let header = Header::new(Default, Default);
+    //     let token = encode(&header, &claims, &EncodingKey::from_secret(jwtkey.as_bytes()))
+    //         .expect("Error creating jwt token");
+    //     let mut cookie = Cookie::new("ourSimpleApp", token);
+    //     cookie.set_http_only(true);  // Prevent JavaScript access to cookie
+    //     cookie.set_secure(false);     // Only send over HTTPS
+    //     cookie.set_same_site(SameSite::Strict); // Restrict cookie sending across sites
+    //     cookie.set_max_age(Duration::hours(24));
+    //     // let encoding_key = EncodingKey::from_secret(jwt_secret.0.as_bytes());
+        
+    // jar.add(cookie);}
+    Redirect::to("/login");
     let mut context = Context::new();
     let errors: Vec<String> = Vec::new();
 
@@ -118,8 +144,8 @@ pub async fn render_login(state: &State<DbConn>) -> Result<RawHtml<String>, Stri
 }
 
 #[post("/login", data = "<form>")]
-pub async fn handle_login(state: &State<DbConn>, form: Form<LoginForm<'_>>) -> Result<RawHtml<String>, String> {
-    let connection = state.conn.lock().unwrap();
+pub fn handle_login(state: &State<DbConn>, form: Form<LoginForm<'_>>, jar: &CookieJar<'_>) -> Result<RawHtml<String>, String> {
+    let connection = state.conn.lock().map_err(|err| err.to_string())?;
     let mut context = Context::new();
     let mut errors: Vec<String> = Vec::new();
     let loginform = form.into_inner();
@@ -179,13 +205,23 @@ pub async fn handle_login(state: &State<DbConn>, form: Form<LoginForm<'_>>) -> R
                 let claims = Claims {
                     exp: expiration as usize,
                     skyColor: "Blue".to_string(),
-                    userid: userid.try_into().unwrap(),
+                    userid: userid.try_into().expect("something wrong in userid"),
                     username: username.to_string(),
                 };
-                let cookie = Cookie::new("crap", "crap");
+                let jwtkey = dotenv::var("JWTSECRET").map_err(|err| err.to_string())?;
+                let header = jsonwebtoken::Header::default();
                 // let header = Header::new(Default, Default);
-
+                let token = encode(&header, &claims, &EncodingKey::from_secret(jwtkey.as_bytes()))
+                    .expect("Error creating jwt token");
+                let mut cookie = Cookie::new("ourSimpleApp", token);
+                cookie.set_http_only(true);  // Prevent JavaScript access to cookie
+                cookie.set_secure(true);     // Only send over HTTPS
+                cookie.set_same_site(SameSite::Strict); // Restrict cookie sending across sites
+                cookie.set_max_age(Duration::hours(24));
                 // let encoding_key = EncodingKey::from_secret(jwt_secret.0.as_bytes());
+                jar.add(cookie);
+                return Redirect::to(uri!(index));
+                
             },
             Err(err) => {
                 errors.push(String::from("Invalid Username / Password"));
@@ -193,23 +229,16 @@ pub async fn handle_login(state: &State<DbConn>, form: Form<LoginForm<'_>>) -> R
                 return Ok(RawHtml(crap));
             }
         }
-        
-        // let matchOrNot = match verify(password, &p){
-        //     Ok(_res) => {
-
-        //     },
-        //     Err(rr) => Ok(rr.to_string())
-        // }
 
     }
-
-    Ok(RawHtml(todo!()))
+    
+    Ok(RawHtml("Looks like login func works".to_string()))
 
 }
 
 pub fn stage(conn: Connection) -> AdHoc {
     AdHoc::on_ignite("Managed Hit Count", |rocket| async {
-        rocket.mount("/", routes![index, render_login])
+        rocket.mount("/", routes![index, render_login, handle_login])
             .manage(DbConn {
                 conn: Mutex::new(conn)
             })
@@ -227,4 +256,28 @@ mod test {
         assert_eq!(ss, "crap");
         
     }
+
+    #[test]
+    fn testdataquery() {
+        let username = "soethiha";
+        let connection = Connection::open("OurApp.db").expect("Failed to open database");
+        let mut userInQuestionStatement = connection.prepare("SELECT * FROM users WHERE USERNAME = ?").expect("something is wrong when checking user query");
+        userInQuestionStatement.bind((1, username)).expect("something is wrong in sql binding");
+
+        while let Ok(sqlite::State::Row) = userInQuestionStatement.next() {
+            let u = userInQuestionStatement.read::<String, _>("username").unwrap();
+            let p = userInQuestionStatement.read::<String, _>("password").unwrap();
+            let userid = userInQuestionStatement.read::<i64, _>("id").unwrap();
+        if u == "" {
+            panic!("user don't exist");
+        }
+
+        if p == "" {
+            panic!("pass don't exist which is unlikely.");
+            
+        }
+
+        println!("username = {}, password = {}, id = {}", u, p, userid);
+    }
+}
 }

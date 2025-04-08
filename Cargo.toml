@@ -13,3 +13,5 @@ lazy_static = "1.5.0"
 sqlite = "0.37.0"
 dotenv = "0.15.0"
 bcrypt = "0.17.0"
+jsonwebtoken = "9.3.1"
+
