@@ -104,13 +104,6 @@ fn rocket() -> _ {
 
     rocket::build()
     .attach(simple_backend::stage(conns))
-    // .mount("/", routes![simple_backend::index, simple_backend::render_login])
-    // .manage(DbConn {
-    //     conn: Mutex::new(conns)
-    // })
-    // .mount("/hello", routes![world])
-    // .mount("/hi", routes![world])
-    // .mount("/getfile", routes![return_file_content])
     .mount("/", FileServer::from("files"))
     .configure(rocket::Config::figment().merge(("address", "0.0.0.0")))
     

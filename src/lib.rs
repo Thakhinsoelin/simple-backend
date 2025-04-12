@@ -3,18 +3,19 @@
 use std::{sync::Mutex, time::{SystemTime, UNIX_EPOCH}};
 use cookie::time::Duration;
 use jsonwebtoken::{encode, EncodingKey};
-use rocket::{http::{private::cookie, ContentType, Status}, response::Redirect};
+use rocket::{ http::{private::cookie, ContentType, Status}, response::Redirect};
 use tera::{Context, Tera};
 use lazy_static::lazy_static;
 use serde::{Serialize, Deserialize};
 use rocket::{response::content::RawHtml,
     http::{Cookie, CookieJar, SameSite},
     State};
+use rocket::request::{FromRequest, Outcome};
 use rocket::fairing::AdHoc;
 use rocket::form::Form;
 use sqlite::{self, Connection};
 use bcrypt::verify;
-
+use std::option::Option;
 #[allow(non_snake_case)]
 mod AppState;
 use AppState::DbConn;
@@ -26,15 +27,17 @@ pub struct LoginForm<'r> {
 }
 
 
-
+#[derive(Debug)]
+pub struct OptionalUser(pub Option<User>); // If the user might not be authenticated
 
 // Simulated Posts
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, Debug)]
 pub struct Post {
-    id: u32,
+    id: i64,
+    create_date: String,
     title: String,
     content: String,
-    authorid: u32,
+    authorid: i64,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -44,6 +47,15 @@ struct Claims {
     userid: i32,
     username: String,
 }
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct User {
+    pub userid: i64,
+    pub username: String,
+    pub exp: usize, // Include the expiration claim if you're using it
+    // Add other user fields as needed
+}
+
 
 
 lazy_static! {
@@ -81,48 +93,198 @@ impl<'r, 'o: 'r> rocket::response::Responder<'r, 'o> for MyResponse {
     }
 }
 
+#[rocket::async_trait]
+impl<'r> FromRequest<'r> for OptionalUser {
+    type Error = ();
+
+    async fn from_request(request: &'r rocket::request::Request<'_>) -> Outcome<Self, Self::Error> {
+        let jwt_secret = dotenv::var("JWTSECRET").unwrap();
+        let jwt_cookie = request.cookies().get("ourSimpleApp");
+
+        match (jwt_secret, jwt_cookie) {
+            (secret, Some(cookie)) => {
+                let token = cookie.value();
+                let decoding_key = jsonwebtoken::DecodingKey::from_secret(secret.as_bytes());
+                let validation = jsonwebtoken::Validation::default(); // You can customize validation rules
+
+                match jsonwebtoken::decode::<User>(&token, &decoding_key, &validation) {
+                    Ok(token_data) => Outcome::Success(OptionalUser(Some(token_data.claims))),
+                    Err(err) => {
+                        eprintln!("JWT verification error: {:?}", err);
+                        Outcome::Success(OptionalUser(None)) // Token invalid, user is not authenticated
+                    }
+                }
+            }
+            _ => Outcome::Success(OptionalUser(None)), // No secret or no cookie, user is not authenticated
+        }
+    }
+}
+
+#[get("/post/<id>")]
+pub fn get_post(id: i64, user: OptionalUser, state: &State<DbConn>) -> MyResponse {
+    let mut errors = Vec::new();
+    let mut context = Context::new();
+    match state.conn.lock() {
+        Ok(connection) => {
+            let mut statement = match connection.prepare("SELECT posts.*, users.username FROM posts INNER JOIN users ON posts.authorid = users.id WHERE posts.id = ?") {
+                Ok(value) => value,
+                Err(code) => {
+                    errors.push(String::from(code.to_string()));
+                    context.insert("errors", &errors);
+                    let crap = match TEMPLATES.render("homepage.html", &context) {
+                        Ok(cp) =>  cp,
+                        Err(cp) => return MyResponse::Error(cp.to_string())
+                    };
+                    return MyResponse::Html(RawHtml(crap))
+                }
+            };
+            match statement.bind((1, id)){
+                Ok(_) => println!("user table query succeed"),
+                Err(code) => {
+                    errors.push(String::from(code.to_string()));
+                    context.insert("errors", &errors);
+                    let crap = match TEMPLATES.render("homepage.html", &context) {
+                        Ok(cp) =>  cp,
+                        Err(cp) => return MyResponse::Error(cp.to_string())
+                    };
+                    return MyResponse::Html(RawHtml(crap))
+                }
+            };
+            match statement.next() {
+                Ok(res)=> {    
+                    let post_id = match statement.read::<i64, _>("id") {
+                        Ok(result) => result,
+                        Err(code) => {
+                            return MyResponse::Error(code.to_string())
+                        }
+                    };
+                    let post_created_date = match statement.read::<String, _>("createdDate"){
+                        Ok(result) => result,
+                        Err(code) => {
+                            return MyResponse::Error(code.to_string())
+                        }
+                    };
+                    let post_title = match statement.read::<String, _>("title"){
+                        Ok(result) => result,
+                        Err(code) => {
+                            return MyResponse::Error(code.to_string())
+                        }
+                    };
+                    let post_body = match statement.read::<String, _>("body"){
+                        Ok(result) => result,
+                        Err(code) => {
+                            return MyResponse::Error(code.to_string())
+                        }
+                    };
+                    let author_id = match statement.read::<i64, _>("authorid"){
+                        Ok(result) => result,
+                        Err(code) => {
+                            return MyResponse::Error(code.to_string())
+                        }
+                    };
+
+
+                },
+                Err(_) => {
+
+                }
+            }
+            MyResponse::Html(RawHtml(String::from("studp shit")))
+
+        },
+        Err(_) => {
+            return MyResponse::Html(RawHtml("asdfa".to_string()));
+        }
+    }
+}
+
 
 #[get("/")]
-pub fn index(state: &State<DbConn>) -> MyResponse {
+pub fn index(user: OptionalUser, state: &State<DbConn>) -> MyResponse {
     let mut context = Context::new();
-    let _i = state.conn.lock().unwrap();
-    // Simulate database query results.
-    let _posts: Vec<Post> = vec![
-        Post {
-            id: 1,
-            title: "Post 1".to_string(),
-            content: "Content 1".to_string(),
-            authorid: 1,
-        },
-        Post {
-            id: 2,
-            title: "Post 2".to_string(),
-            content: "Content 2".to_string(),
-            authorid: 1,
-        },
-    ];
-    // Simulate error
+    
     let error_messages = vec![
         "Error 1: This is a Simulated Error".to_string()
     ];
-    context.insert("errors", &error_messages);
-    let crap = match TEMPLATES.render("homepage.html", &context) {
-        Ok(kind) => {
-            kind
-        },
-        Err(err) => {
-            err.to_string()
-        },
-    };
-    MyResponse::Html(RawHtml(crap))
+    // Simulate database query results.
+    let mut posts = Vec::new();
+    // Simulate error
+    if let Some(user) = user.0 {
+        match state.conn.lock() {
+            Ok(connection) =>{
+                
+                
+                // let mut get_post_statement = match connection.prepare("SELECT * FROM posts WHERE authorid = ?") {
+                //     Ok(value) => value,
+                //     Err(_code) => {
+                //         return MyResponse::Html(RawHtml(String::from("no posts here")))
+                //     }
+                // };
+
+                // match get_post_statement.bind((1, user.userid)){
+                //     Ok(_) => println!("user table query succeed"),
+                //     Err(code) => {
+                //         return MyResponse::Html(RawHtml(format!("It seems query table failed with code: {code}")))
+                //     }
+                // };
+                let query = "SELECT * FROM posts WHERE authorid = ?";
+                for row in connection
+                    .prepare(query)
+                    .unwrap()
+                    .into_iter()
+                    .bind((1, user.userid))
+                    .unwrap()
+                    .map(|row| row.unwrap())
+                {
+                    let post_id = row.read::<i64,_>("id");
+                    let post_created_date = row.read::<&str,_>("createdDate");
+                    let post_title = row.read::<&str,_>("title");
+                    let post_body = row.read::<&str,_>("body");
+                    let post_author_id = row.read::<i64,_>("authorid");
+
+                    let post = Post {
+                        id: post_id,
+                        create_date: post_created_date.to_owned(),
+                        title: post_title.to_owned(),
+                        content: post_body.to_owned(),
+                        authorid: post_author_id
+                    };
+                    posts.push(post);
+
+                }
+                context.insert("user", &user);
+                context.insert("posts", &posts);
+                
+
+                match TEMPLATES.render("dashboard.html", &context) {
+                    Ok(result) => MyResponse::Html(RawHtml(result)),
+                    Err(err_code) => {
+                        MyResponse::Error(format!("{:?}",err_code.kind))
+                    }
+                }
+            },
+            Err(code) => return MyResponse::Error(code.to_string())
+        }
+    } else {
+        context.insert("errors", &error_messages);
+        match TEMPLATES.render("homepage.html", &context) {
+            Ok(result) => MyResponse::Html(RawHtml(result)),
+            Err(err_code) => {
+                MyResponse::Error(err_code.to_string())
+            }
+        }
+
+    }
+    
     
 }
 
 #[get("/login")]
-pub async fn render_login(_state: &State<DbConn>, /*jar: &CookieJar<'_>*/) -> MyResponse {
+pub async fn render_login( _state: &State<DbConn>, /*jar: &CookieJar<'_>*/) -> MyResponse {
     let mut context = Context::new();
-    let errors: Vec<String> = Vec::new();
+    let mut errors: Vec<String> = Vec::new();
 
+    
     context.insert("errors", &errors);
     match TEMPLATES.render("login.html", &context) {
         Ok(result) => MyResponse::Html(RawHtml(result)),
@@ -132,154 +294,6 @@ pub async fn render_login(_state: &State<DbConn>, /*jar: &CookieJar<'_>*/) -> My
     }
 }
 
-// #[post("/login", data = "<form>")]
-// pub fn handle_login(state: &State<DbConn>, form: Form<LoginForm<'_>>, jar: &CookieJar<'_>) -> MyResponse {
-//     let mut errors: Vec<String> = Vec::new();
-//     let connection = match state.conn.lock() {
-//         Ok(connection) => {
-//             let mut context = Context::new();
-//             let loginform = form.into_inner();
-//             let username = if loginform.username.is_empty() {
-//                 "".to_string()
-//             } else {
-//                 loginform.username.to_string()
-//             };
-//             let password = if loginform.password.is_empty() {
-//                 "".to_string()
-//             } else {
-//                 loginform.password.to_string()
-//             };
-
-//             let username = username.trim();
-//             let password = password.trim();
-//             if username == "" {
-//                 errors.push(String::from("Invalid Username / Password"));
-//             }
-
-//             if password == "" {
-//                 errors.push(String::from("Invalid Username / Password"));
-//             }
-//             println!("username: {}\npassword: {}\n", username, password);
-//             if errors.len() > 0 {
-//                 context.insert("errors", &errors);
-//                 let crap = match TEMPLATES.render("login.html", &context) {
-//                     Ok(cp) =>  cp,
-//                     Err(cp) => return MyResponse::Error(cp.to_string())
-//                 };
-                
-//             }
-
-//             let mut user_in_question_statement = match connection.prepare("SELECT * FROM users WHERE USERNAME = ?") {
-//                 Ok(value) => value,
-//                 Err(code) => return MyResponse::Error(code.to_string())
-//             };
-//             match user_in_question_statement.bind((1, username)){
-//                 Ok(_) => println!("user table query succeed"),
-//                 Err(code) => return MyResponse::Error(code.to_string())
-//             };
-
-//             // let mut rows = match user_in_question_statement([]) { // No additional parameters needed for execution
-//             //     Ok(rows) => rows,
-//             //     Err(code) => return MyResponse::Error(code.to_string()),
-//             // };
-
-//             match user_in_question_statement.next() {
-//                 Ok(bla)=> {    
-//                     let u = match user_in_question_statement.read::<String, _>("username") {
-//                         Ok(result) => result,
-//                         Err(code) => return MyResponse::Error(code.to_string())
-//                     };
-//                     let p = match user_in_question_statement.read::<String, _>("password"){
-//                         Ok(result) => result,
-//                         Err(code) => return MyResponse::Error(code.to_string())
-//                     };
-//                     let userid = match user_in_question_statement.read::<i64, _>("id"){
-//                         Ok(result) => result,
-//                         Err(code) => return MyResponse::Error(code.to_string())
-//                     };
-//                     if u == "" {
-//                         errors.push(String::from("Invalid Username / Password"));
-//                         let crap = match TEMPLATES.render("login.html", &context){
-//                             Ok(result) => result,
-//                             Err(code) => return MyResponse::Error(code.to_string())
-//                         };
-//                         return MyResponse::Html(RawHtml(crap));
-//                     }
-
-//                     if p == "" {
-//                         errors.push(String::from("Invalid Username / Password"));
-//                         let crap = match TEMPLATES.render("login.html", &context){
-//                             Ok(result) => result,
-//                             Err(code) => return MyResponse::Error(code.to_string())
-//                         };
-//                         return MyResponse::Html(RawHtml(crap));
-//                     }
-
-//                     println!("from database:\nusername: {}\npassword: {}\n", u, p);
-//                     match verify(password, &p) {
-//                         Ok(_) => {
-//                             let expiration = SystemTime::now()
-//                             .duration_since(UNIX_EPOCH)
-//                             .unwrap()
-//                             .as_secs()
-//                             + 60 * 60 * 24; // 24 hours
-
-//                             let claims = Claims {
-//                                 exp: expiration as usize,
-//                                 skyColor: "Blue".to_string(),
-//                                 userid: userid.try_into().expect("something wrong in userid"),
-//                                 username: username.to_string(),
-//                             };
-//                             let jwtkey = match dotenv::var("JWTSECRET"){
-//                                 Ok(result) => result,
-//                                 Err(code) => return MyResponse::Error(code.to_string())
-//                             };
-
-//                             let header = jsonwebtoken::Header::default();
-//                             let token = encode(&header, &claims, &EncodingKey::from_secret(jwtkey.as_bytes()))
-//                                 .expect("Error creating jwt token");
-
-//                             let mut cookie = Cookie::new("ourSimpleApp", token);
-//                             cookie.set_http_only(true);  // Prevent JavaScript access to cookie
-//                             cookie.set_secure(true);     // Only send over HTTPS
-//                             cookie.set_same_site(SameSite::Strict); // Restrict cookie sending across sites
-//                             cookie.set_max_age(Duration::hours(24));
-//                             // let encoding_key = EncodingKey::from_secret(jwt_secret.0.as_bytes());
-//                             jar.add(cookie);
-//                             println!("password is right")
-                            
-//                         },
-//                         Err(err) => {
-//                             errors.push(String::from("Invalid Username / Password"));
-//                             let crap = match TEMPLATES.render("login.html", &context){
-//                                 Ok(result) => result,
-//                                 Err(code) => return MyResponse::Error(code.to_string())
-//                             };
-//                             println!("password is wrong");
-//                             return MyResponse::Html(RawHtml(crap));
-//                         }
-//                     }
-//                 },
-//                 Err(_) => {
-//                     errors.push("Invalid Username / Password".to_string());
-//                     let crap = match TEMPLATES.render("login.html", &context){
-//                         Ok(result) => result,
-//                         Err(code) => return MyResponse::Error(code.to_string())
-//                     };
-//                     return MyResponse::Html(RawHtml(crap));
-//                 }
-
-//             }
-
-            
-
-            
-            
-//         },
-//         Err(_) => return MyResponse::Error("mutex lock failed".to_string())
-//     };
-//     MyResponse::Redirect(Redirect::to("/"))
-// }
 
 #[post("/login", data = "<form>")]
 pub fn handle_login(state: &State<DbConn>, form: Form<LoginForm<'_>>, jar: &CookieJar<'_>) -> MyResponse {

@@ -1,16 +1,16 @@
 <!DOCTYPE html>
 <html lang="en">
-<%- include('includes/head.ejs') %>
+{% include "includes/head.html" %}
 <body>
-    <%- include('includes/header.ejs') %>
+    {% include "includes/header.html" %}
     <main>
         <h2>Welcome to your dashboard</h2>
         <ul>
-            <% posts.forEach(post => { %>
-               <li><a href="/post/<%= post.id %>"><%= post.title %></a> on <%= new Date(post.createdDate).getMonth() + 1 %>/<%= new Date(post.createdDate).getDate() %>/<%= new Date(post.createdDate).getFullYear() %></li> 
-            <% }) %>
+            {% for post in posts %}
+                <li><a href="/post/crap"> ona</a> on {{ post.title }} is {{ post.content }}</li>
+            {% endfor %}
         </ul>
     </main>
-    <%- include('includes/footer.ejs') %>
+    {% include "includes/footer.html" %}
 </body>
 </html>
