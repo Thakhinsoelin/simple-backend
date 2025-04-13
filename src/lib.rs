@@ -120,6 +120,7 @@ impl<'r> FromRequest<'r> for OptionalUser {
     }
 }
 
+
 #[get("/post/<id>")]
 pub fn get_post(id: i64, user: OptionalUser, state: &State<DbConn>) -> MyResponse {
     let mut errors = Vec::new();
@@ -212,21 +213,6 @@ pub fn index(user: OptionalUser, state: &State<DbConn>) -> MyResponse {
     if let Some(user) = user.0 {
         match state.conn.lock() {
             Ok(connection) =>{
-                
-                
-                // let mut get_post_statement = match connection.prepare("SELECT * FROM posts WHERE authorid = ?") {
-                //     Ok(value) => value,
-                //     Err(_code) => {
-                //         return MyResponse::Html(RawHtml(String::from("no posts here")))
-                //     }
-                // };
-
-                // match get_post_statement.bind((1, user.userid)){
-                //     Ok(_) => println!("user table query succeed"),
-                //     Err(code) => {
-                //         return MyResponse::Html(RawHtml(format!("It seems query table failed with code: {code}")))
-                //     }
-                // };
                 let query = "SELECT * FROM posts WHERE authorid = ?";
                 for row in connection
                     .prepare(query)
@@ -299,22 +285,38 @@ pub async fn render_login( _state: &State<DbConn>, /*jar: &CookieJar<'_>*/) -> M
 pub fn handle_login(state: &State<DbConn>, form: Form<LoginForm<'_>>, jar: &CookieJar<'_>) -> MyResponse {
     let mut errors: Vec<String> = Vec::new();
     let mut context = Context::new();
+    let u;
+    let p;
+    let userid;
+
+    let mut username: &str;
+    let mut password: &str;
+
     match state.conn.lock() {
         Ok(connection) => {
             let loginform = form.into_inner();
-            let username = if loginform.username.is_empty() {
-                "".to_string()
+            username = if loginform.username.is_empty() {
+                ""
             } else {
-                loginform.username.to_string()
+                loginform.username
             };
-            let password = if loginform.password.is_empty() {
-                "".to_string()
+            password = if loginform.password.is_empty() {
+                ""
             } else {
-                loginform.password.to_string()
+                loginform.password
             };
 
-            let username = username.trim();
-            let password = password.trim();
+            username = username.trim();
+            password = password.trim();
+
+            if username.len() > 32 {
+                errors.push(String::from("The amount of characters in the name should not exceed 32"));
+            }
+
+            if password.len() > 32 {
+                errors.push(String::from("The amount of characters in the password should not exceed 32"));
+            }
+
             if username == "" {
                 errors.push(String::from("Invalid Username / Password"));
             }
@@ -356,10 +358,10 @@ pub fn handle_login(state: &State<DbConn>, form: Form<LoginForm<'_>>, jar: &Cook
                     return MyResponse::Html(RawHtml(crap))
                 }
             };
-
+            
             match user_in_question_statement.next() {
                 Ok(_res)=> {    
-                    let u = match user_in_question_statement.read::<String, _>("username") {
+                    u = match user_in_question_statement.read::<String, _>("username") {
                         Ok(result) => result,
                         Err(_code) => {
                             errors.push(String::from("Invalid Username / Password"));
@@ -371,7 +373,7 @@ pub fn handle_login(state: &State<DbConn>, form: Form<LoginForm<'_>>, jar: &Cook
                             return MyResponse::Html(RawHtml(crap))
                         }
                     };
-                    let p = match user_in_question_statement.read::<String, _>("password"){
+                    p = match user_in_question_statement.read::<String, _>("password"){
                         Ok(result) => result,
                         Err(_code) => {
                             errors.push(String::from("Invalid Username / Password"));
@@ -383,7 +385,7 @@ pub fn handle_login(state: &State<DbConn>, form: Form<LoginForm<'_>>, jar: &Cook
                             return MyResponse::Html(RawHtml(crap))
                         }
                     };
-                    let userid = match user_in_question_statement.read::<i64, _>("id"){
+                    userid = match user_in_question_statement.read::<i64, _>("id"){
                         Ok(result) => result,
                         Err(_code) => {
                             errors.push(String::from("Invalid Username / Password"));
@@ -395,6 +397,7 @@ pub fn handle_login(state: &State<DbConn>, form: Form<LoginForm<'_>>, jar: &Cook
                             return MyResponse::Html(RawHtml(crap))
                         }
                     };
+
                     if u == "" {
                         errors.push(String::from("Invalid Username / Password"));
                         let crap = match TEMPLATES.render("login.html", &context){
@@ -428,84 +431,9 @@ pub fn handle_login(state: &State<DbConn>, form: Form<LoginForm<'_>>, jar: &Cook
                         };
                         return MyResponse::Html(RawHtml(crap));
                     }
+                    
 
-                    println!("from database:\nusername: {}\npassword: {}\n", u, p);
-                    match verify(password, &p) {
-                        Ok(res) => {
-                            if res {
-                                let expiration = SystemTime::now()
-                                .duration_since(UNIX_EPOCH)
-                                .unwrap()
-                                .as_secs()
-                                + 60 * 60 * 24; // 24 hours
 
-                                let claims = Claims {
-                                    exp: expiration as usize,
-                                    sky_color: "Blue".to_string(),
-                                    userid: userid.try_into().expect("something wrong in userid"),
-                                    username: username.to_string(),
-                                };
-                                let jwtkey = match dotenv::var("JWTSECRET"){
-                                    Ok(result) => result,
-                                    Err(code) => {
-                                        errors.push(String::from(code.to_string()));
-                                        context.insert("errors", &errors);
-                                        let crap = match TEMPLATES.render("login.html", &context) {
-                                            Ok(cp) =>  cp,
-                                            Err(cp) => return MyResponse::Error(cp.to_string())
-                                        };
-                                        return MyResponse::Html(RawHtml(crap))
-                                    }
-                                };
-
-                                let header = jsonwebtoken::Header::default();
-                                let token = encode(&header, &claims, &EncodingKey::from_secret(jwtkey.as_bytes()))
-                                    .expect("Error creating jwt token");
-
-                                let mut cookie = Cookie::new("ourSimpleApp", token);
-                                cookie.set_http_only(true);  // Prevent JavaScript access to cookie
-                                cookie.set_secure(true);     // Only send over HTTPS
-                                cookie.set_same_site(SameSite::Strict); // Restrict cookie sending across sites
-                                cookie.set_max_age(Duration::hours(24));
-                                // let encoding_key = EncodingKey::from_secret(jwt_secret.0.as_bytes());
-                                jar.add(cookie);
-                                println!("password is right")
-                            } else {
-                                errors.push(String::from("Invalid Username / Password"));
-                                let crap = match TEMPLATES.render("login.html", &context){
-                                    Ok(result) => result,
-                                    Err(code) => {
-                                        errors.push(String::from(code.to_string()));
-                                        context.insert("errors", &errors);
-                                        let crap = match TEMPLATES.render("login.html", &context) {
-                                            Ok(cp) =>  cp,
-                                            Err(cp) => return MyResponse::Error(cp.to_string())
-                                        };
-                                        return MyResponse::Html(RawHtml(crap))
-                                    }
-                                };
-                                println!("password is wrong");
-                                return MyResponse::Html(RawHtml(crap));
-                            }
-                        },
-                        Err(err) => {
-                            errors.push(String::from(err.to_string()));
-                            let crap = match TEMPLATES.render("login.html", &context){
-                                Ok(result) => result,
-                                Err(code) => {
-                                    errors.push(String::from(code.to_string()));
-                                    context.insert("errors", &errors);
-                                    let crap = match TEMPLATES.render("login.html", &context) {
-                                        Ok(cp) =>  cp,
-                                        Err(cp) => return MyResponse::Error(cp.to_string())
-                                    };
-                                    return MyResponse::Html(RawHtml(crap))
-                                }
-                            };
-                            println!("password is wrong");
-                            return MyResponse::Html(RawHtml(crap));
-                        }
-                    }
                 },
                 Err(_) => {
                     errors.push("Invalid Username / Password".to_string());
@@ -526,20 +454,101 @@ pub fn handle_login(state: &State<DbConn>, form: Form<LoginForm<'_>>, jar: &Cook
                 }
 
             }
-
-            
-
-            
-            
         },
         Err(_) => return MyResponse::Error("mutex lock failed".to_string())
     };
+    match verify(password, &p) {
+        Ok(res) => {
+            if res {
+                let expiration = SystemTime::now()
+                    .duration_since(UNIX_EPOCH)
+                    .unwrap()
+                    .as_secs()
+                    + 60 * 60 * 24; // 24 hours
+
+                let claims = Claims {
+                    exp: expiration as usize,
+                    sky_color: "Blue".to_string(),
+                    userid: userid.try_into().expect("something wrong in userid"),
+                    username: username.to_string(),
+                };
+                let jwtkey = match dotenv::var("JWTSECRET"){
+                    Ok(result) => result,
+                    Err(code) => {
+                        errors.push(String::from(code.to_string()));
+                        context.insert("errors", &errors);
+                        let crap = match TEMPLATES.render("login.html", &context) {
+                            Ok(cp) =>  cp,
+                            Err(cp) => return MyResponse::Error(cp.to_string())
+                        };
+                        return MyResponse::Html(RawHtml(crap))
+                    }
+                };
+
+                let header = jsonwebtoken::Header::default();
+                let token = encode(&header, &claims, &EncodingKey::from_secret(jwtkey.as_bytes()))
+                    .expect("Error creating jwt token");
+
+                let mut cookie = Cookie::new("ourSimpleApp", token);
+                cookie.set_http_only(true);  // Prevent JavaScript access to cookie
+                cookie.set_secure(true);     // Only send over HTTPS
+                cookie.set_same_site(SameSite::Strict); // Restrict cookie sending across sites
+                cookie.set_max_age(Duration::hours(24));
+                // let encoding_key = EncodingKey::from_secret(jwt_secret.0.as_bytes());
+                jar.add(cookie);
+                println!("password is right")
+            } else {
+                errors.push(String::from("Invalid Username / Password"));
+                let crap = match TEMPLATES.render("login.html", &context){
+                    Ok(result) => result,
+                    Err(code) => {
+                        errors.push(String::from(code.to_string()));
+                        context.insert("errors", &errors);
+                        let crap = match TEMPLATES.render("login.html", &context) {
+                            Ok(cp) =>  cp,
+                            Err(cp) => return MyResponse::Error(cp.to_string())
+                        };
+                        return MyResponse::Html(RawHtml(crap))
+                    }
+                };
+                println!("password is wrong");
+                return MyResponse::Html(RawHtml(crap));
+            }
+        },
+        Err(err) => {
+            errors.push(String::from(err.to_string()));
+            let crap = match TEMPLATES.render("login.html", &context){
+                Ok(result) => result,
+                Err(code) => {
+                    errors.push(String::from(code.to_string()));
+                    context.insert("errors", &errors);
+                    let crap = match TEMPLATES.render("login.html", &context) {
+                        Ok(cp) =>  cp,
+                        Err(cp) => return MyResponse::Error(cp.to_string())
+                    };
+                    return MyResponse::Html(RawHtml(crap))
+                }
+            };
+            println!("password is wrong");
+            return MyResponse::Html(RawHtml(crap));
+        }
+    }
     MyResponse::Redirect(Redirect::to("/"))
+}
+
+#[get("/logout")]
+fn logout(user: OptionalUser, cookie_jar: &CookieJar<'_>) -> MyResponse {
+    if let Some(user) = user.0 {
+        cookie_jar.remove("ourSimpleApp");
+        return MyResponse::Redirect(Redirect::to("/"))
+    } else {
+        return MyResponse::Html(RawHtml("You are not logged in.".to_string()));
+    }
 }
 
 pub fn stage(conn: Connection) -> AdHoc {
     AdHoc::on_ignite("Managed Hit Count", |rocket| async {
-        rocket.mount("/", routes![index, render_login, handle_login])
+        rocket.mount("/", routes![index, render_login, handle_login, logout])
             .manage(DbConn {
                 conn: Mutex::new(conn)
             })
