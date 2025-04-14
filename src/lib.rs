@@ -26,6 +26,11 @@ pub struct LoginForm<'r> {
     pub password: &'r str,
 }
 
+#[derive(FromForm)]
+pub struct PostForm<'r> {
+    pub title: &'r str,
+    pub body: &'r str,
+}
 
 #[derive(Debug)]
 pub struct OptionalUser(pub Option<User>); // If the user might not be authenticated
@@ -67,7 +72,7 @@ lazy_static! {
                 ::std::process::exit(1);
             }
         };
-        tera.autoescape_on(vec![]);
+        tera.autoescape_on(vec![".html", ".sql"]);
         
         tera
     };
@@ -125,6 +130,115 @@ impl<'r> FromRequest<'r> for OptionalUser {
 pub fn get_post(id: i64, user: OptionalUser, state: &State<DbConn>) -> MyResponse {
     let mut errors = Vec::new();
     let mut context = Context::new();
+    let mut posts: Vec<Post> = Vec::new();
+    let mut post_id;
+    let mut post_created_date = String::new();
+    let mut post_title = String::new();
+    let mut post_body = String::new();
+    let mut author_id;
+    match state.conn.lock() {
+        Ok(connection) => {
+            let mut statement = match connection.prepare("SELECT * FROM posts WHERE id = ?") {
+                Ok(value) => value,
+                Err(code) => {
+                    errors.push(String::from(code.to_string()));
+                    context.insert("errors", &errors);
+                    let crap = match TEMPLATES.render("homepage.html", &context) {
+                        Ok(cp) =>  cp,
+                        Err(cp) => return MyResponse::Error(cp.to_string())
+                    };
+                    return MyResponse::Html(RawHtml(crap))
+                }
+            };
+            match statement.bind((1, id)){
+                Ok(_) => println!("user table query succeed"),
+                Err(code) => {
+                    errors.push(String::from(code.to_string()));
+                    context.insert("errors", &errors);
+                    let crap = match TEMPLATES.render("homepage.html", &context) {
+                        Ok(cp) =>  cp,
+                        Err(cp) => return MyResponse::Error(cp.to_string())
+                    };
+                    return MyResponse::Html(RawHtml(crap))
+                }
+            };
+            match statement.next() {
+                Ok(res)=> {    
+                    post_id = match statement.read::<i64, _>("id") {
+                        Ok(result) => result,
+                        Err(code) => {
+                            return MyResponse::Error(code.to_string())
+                        }
+                    };
+                    post_created_date = match statement.read::<String, _>("createdDate"){
+                        Ok(result) => result,
+                        Err(code) => {
+                            return MyResponse::Error(code.to_string())
+                        }
+                    };
+                    post_title = match statement.read::<String, _>("title"){
+                        Ok(result) => result,
+                        Err(code) => {
+                            return MyResponse::Error(code.to_string())
+                        }
+                    };
+                    post_body = match statement.read::<String, _>("body"){
+                        Ok(result) => result,
+                        Err(code) => {
+                            return MyResponse::Error(code.to_string())
+                        }
+                    };
+                    author_id = match statement.read::<i64, _>("authorid"){
+                        Ok(result) => result,
+                        Err(code) => {
+                            return MyResponse::Error(code.to_string())
+                        }
+                    };
+                },
+                Err(_) => {
+                    println!("user table query failed");
+                    return MyResponse::Error("table failed".to_string());
+
+                }
+            }
+
+        },
+        Err(_) => {
+            return MyResponse::Html(RawHtml("mutex lock is failed".to_string()));
+        }
+    }
+    let post = Post {
+        id: post_id,
+        create_date: post_created_date,
+        title: post_title,
+        content: post_body,
+        authorid: author_id
+    };
+
+    if let Some(user) = user.0 {
+        context.insert("post", &post);
+        context.insert("user", &user);
+        context.insert("username", user.username.as_str());
+    };
+    match TEMPLATES.render("single-post.html", &context) {
+        Ok(result) => MyResponse::Html(RawHtml(result)),
+        Err(err_code) => {
+            MyResponse::Error(err_code.to_string())
+        }
+    }
+}
+
+#[post("/delete-post/<id>")]
+fn delete_post(id: i64, user: OptionalUser, state: &State<DbConn>) -> MyResponse {
+    let mut errors = Vec::new();
+    let mut context = Context::new();
+    let mut post_id;
+    let mut post_created_date = String::new();
+    let mut post_title = String::new();
+    let mut post_body = String::new();
+    let mut author_id;
+
+    let mut param_user_id = 0;
     match state.conn.lock() {
         Ok(connection) => {
             let mut statement = match connection.prepare("SELECT posts.*, users.username FROM posts INNER JOIN users ON posts.authorid = users.id WHERE posts.id = ?") {
@@ -152,53 +266,103 @@ pub fn get_post(id: i64, user: OptionalUser, state: &State<DbConn>) -> MyRespons
                 }
             };
             match statement.next() {
-                Ok(res)=> {    
-                    let post_id = match statement.read::<i64, _>("id") {
+                Ok(res)=> {
+                    post_id = match statement.read::<i64, _>("id") {
                         Ok(result) => result,
                         Err(code) => {
-                            return MyResponse::Error(code.to_string())
+                            return MyResponse::Redirect(Redirect::to("/"))
                         }
                     };
-                    let post_created_date = match statement.read::<String, _>("createdDate"){
+                    post_created_date = match statement.read::<String, _>("createdDate"){
                         Ok(result) => result,
                         Err(code) => {
-                            return MyResponse::Error(code.to_string())
+                            return MyResponse::Redirect(Redirect::to("/"))
                         }
                     };
-                    let post_title = match statement.read::<String, _>("title"){
+                    post_title = match statement.read::<String, _>("title"){
                         Ok(result) => result,
                         Err(code) => {
-                            return MyResponse::Error(code.to_string())
+                            return MyResponse::Redirect(Redirect::to("/"))
                         }
                     };
-                    let post_body = match statement.read::<String, _>("body"){
+                    post_body = match statement.read::<String, _>("body"){
                         Ok(result) => result,
                         Err(code) => {
-                            return MyResponse::Error(code.to_string())
+                            return MyResponse::Redirect(Redirect::to("/"))
                         }
                     };
-                    let author_id = match statement.read::<i64, _>("authorid"){
+                    author_id = match statement.read::<i64, _>("authorid"){
                         Ok(result) => result,
                         Err(code) => {
-                            return MyResponse::Error(code.to_string())
+                            return MyResponse::Redirect(Redirect::to("/"))
                         }
                     };
-
-
                 },
                 Err(_) => {
+                    println!("user table query failed");
+                    return MyResponse::Error("table failed".to_string());
 
                 }
             }
-            MyResponse::Html(RawHtml(String::from("studp shit")))
 
         },
         Err(_) => {
-            return MyResponse::Html(RawHtml("asdfa".to_string()));
+            return MyResponse::Html(RawHtml("mutex lock is failed".to_string()));
+        }
+    }
+
+    let post = Post {
+        id: post_id,
+        create_date: post_created_date,
+        title: post_title,
+        content: post_body,
+        authorid: author_id
+    };
+    if let Some(user) = user.0 {
+        if post.authorid != user.userid {
+            return MyResponse::Redirect(Redirect::to("/"))
+        }
+        param_user_id = user.userid;
+        context.insert("post", &post);
+        context.insert("user", &user);
+        context.insert("username", user.username.as_str());
+    };
+    match state.conn.lock() {
+        Ok(connection) => {
+            let mut statement = match connection.prepare("DELETE FROM posts WHERE id = ?") {
+                Ok(value) => value,
+                Err(code) => {
+                    return MyResponse::Error(code.to_string())
+                }
+            };
+            match statement.bind((1, id)){
+                Ok(_) => println!("user table query succeed"),
+                Err(code) => {
+                    return MyResponse::Error(code.to_string())
+                }
+            };
+            match statement.next() {
+                Ok(sqlite::State::Done) => {
+                    println!("Post with id {} deleted successfully", param_user_id);
+                    // Return a success response (e.g., redirect)
+                    return MyResponse::Redirect(Redirect::to("/"));
+                }
+                Ok(sqlite::State::Row) => {
+                    // DELETE statements should not return rows. This is unexpected.
+                    eprintln!("Warning: DELETE statement returned rows unexpectedly.");
+                    return MyResponse::Error("Unexpected response from DELETE query".to_string());
+                }
+                Err(code) => {
+                    return MyResponse::Error(code.to_string());
+                }
+            };
+
+        },
+        Err(_) => {
+            return MyResponse::Html(RawHtml("mutex lock is failed".to_string()));
         }
     }
 }
-
 
 #[get("/")]
 pub fn index(user: OptionalUser, state: &State<DbConn>) -> MyResponse {
@@ -213,6 +377,7 @@ pub fn index(user: OptionalUser, state: &State<DbConn>) -> MyResponse {
     if let Some(user) = user.0 {
         match state.conn.lock() {
             Ok(connection) =>{
+
                 let query = "SELECT * FROM posts WHERE authorid = ?";
                 for row in connection
                     .prepare(query)
@@ -280,6 +445,34 @@ pub async fn render_login( _state: &State<DbConn>, /*jar: &CookieJar<'_>*/) -> M
     }
 }
 
+#[get("/create-post")]
+fn create_post(user: OptionalUser) -> MyResponse {
+    let mut context = Context::new();
+    match user.0 {
+        Some(user) => {
+            context.insert("user", &user);
+            match TEMPLATES.render("create-post.html", &context) {
+                Ok(result) => MyResponse::Html(RawHtml(result)),
+                Err(err_code) => {
+                    return MyResponse::Error(err_code.to_string())
+                }
+            }
+        },
+        None => {
+            return MyResponse::Redirect(Redirect::to("/"))
+        }
+    }
+}
+
+fn shared_post_validation() -> Vec<String> {
+
+}
+
+#[post("/create-post", data = "<post>")]
+fn handle_create_post(user: OptionalUser, state: &State<DbConn>, post: Form<PostForm<'_>>) -> MyResponse {
+
+    todo!()
+}
 
 #[post("/login", data = "<form>")]
 pub fn handle_login(state: &State<DbConn>, form: Form<LoginForm<'_>>, jar: &CookieJar<'_>) -> MyResponse {
@@ -457,6 +650,7 @@ pub fn handle_login(state: &State<DbConn>, form: Form<LoginForm<'_>>, jar: &Cook
         },
         Err(_) => return MyResponse::Error("mutex lock failed".to_string())
     };
+
     match verify(password, &p) {
         Ok(res) => {
             if res {
@@ -548,7 +742,7 @@ fn logout(user: OptionalUser, cookie_jar: &CookieJar<'_>) -> MyResponse {
 
 pub fn stage(conn: Connection) -> AdHoc {
     AdHoc::on_ignite("Managed Hit Count", |rocket| async {
-        rocket.mount("/", routes![index, render_login, handle_login, logout])
+        rocket.mount("/", routes![index, render_login, handle_login, logout, get_post, delete_post, create_post, handle_create_post])
             .manage(DbConn {
                 conn: Mutex::new(conn)
             })
