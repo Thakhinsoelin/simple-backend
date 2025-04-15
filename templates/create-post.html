@@ -4,6 +4,9 @@
 <body>
     {% include "includes/header.html" %}
     <main>
+        {% for error in errors %}
+            <p class="notice">{{error}}</p>
+        {% endfor %}
         <form action="/create-post" method="POST">
             <fieldset>
                 <legend>Create a new post</legend>
