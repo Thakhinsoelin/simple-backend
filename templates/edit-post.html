@@ -1,32 +1,26 @@
 <!DOCTYPE html>
 <html lang="en">
-<head>
-    <base href="/">
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Document</title>
-    <link rel="stylesheet" href="styles.css">
-</head>
+{% include "includes/head.html" %}
 <body>
-    <%- include('includes/header.ejs') %>
+    {% include "includes/header.html" %}
     <main>
-        <form action="/create-post" method="POST">
-            <% error.forEach(error => { %>
-                <p class="notice"><%= error %></p>
-            <% }) %>
+        <form action="/edit-post/{{ post.id }}" method="POST">
+            {% for error in errors %}
+                <p class="notice">{{error}}</p>
+            {% endfor %}
             <fieldset>
                 <legend>Edit Existing Post </legend>
                 <label for="title" ><small>Title</small></label>
-                <input type="text" value="<%= post.title %>" id="title" name="title" autocomplete="off">
+                <input type="text" value="{{ post.title }}" id="title" name="title" autocomplete="off">
 
                 <label for="body" ><small>Content</small></label>
-                <textarea name="body" id="body"><%= post.body %></textarea>
+                <textarea name="body" id="body">{{ post.content }}</textarea>
                 <br>
 
                 <button>Save Changes</button>
             </fieldset>
         </form>
     </main>
-    <%- include('includes/footer.ejs') %>
+    {% include "includes/footer.html" %}
 </body>
 </html>

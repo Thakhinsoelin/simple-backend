@@ -12,21 +12,28 @@ use rocket::{response::content::RawHtml,
     State};
 use rocket::request::{FromRequest, Outcome};
 use rocket::fairing::AdHoc;
-use rocket::form::Form;
+use rocket::form::{Form, ValueField};
 use sqlite::{self, Connection};
-use bcrypt::verify;
+use bcrypt::{verify, DEFAULT_COST};
 use std::option::Option;
+use std::sync::LockResult;
+use ammonia::url::quirks::username;
 use chrono::{ Utc};
 
 #[allow(non_snake_case)]
 mod AppState;
 use AppState::DbConn;
+use regex::Regex;
 
 #[derive(FromForm, Deserialize)]
 pub struct LoginForm<'r> {
     pub username: &'r str,
     pub password: &'r str,
 }
+
+
+
+
 
 #[derive(FromForm)]
 pub struct PostForm<'r> {
@@ -169,13 +176,13 @@ pub fn get_post(id: i64, user: OptionalUser, state: &State<DbConn>) -> MyRespons
                     post_id = match statement.read::<i64, _>("id") {
                         Ok(result) => result,
                         Err(code) => {
-                            return MyResponse::Error(code.to_string())
+                            return MyResponse::Error("that post don't exist".to_string())
                         }
                     };
                     post_created_date = match statement.read::<String, _>("createdDate"){
                         Ok(result) => result,
                         Err(code) => {
-                            return MyResponse::Error(code.to_string())
+                            return MyResponse::Error("That post don't exist".to_string())
                         }
                     };
                     post_title = match statement.read::<String, _>("title"){
@@ -217,11 +224,7 @@ pub fn get_post(id: i64, user: OptionalUser, state: &State<DbConn>) -> MyRespons
         authorid: author_id
     };
 
-    if let Some(user) = user.0 {
-        context.insert("post", &post);
-        context.insert("user", &user);
-        context.insert("username", user.username.as_str());
-    };
+    
     match TEMPLATES.render("single-post.html", &context) {
         Ok(result) => MyResponse::Html(RawHtml(result)),
         Err(err_code) => {
@@ -468,26 +471,99 @@ fn create_post(user: OptionalUser) -> MyResponse {
     }
 }
 
-#[get("/edit-post")]
-fn edit_post(user: OptionalUser, state: &State<DbConn>) -> MyResponse {
+#[get("/edit-post/<id>")]
+fn edit_post(id: i64, user: OptionalUser, state: &State<DbConn>) -> MyResponse {
     let mut context = Context::new();
     let mut errors: Vec<String> = Vec::new();
-    
-    
-    
+    let mut post = Post {
+        id: 0,
+        create_date: String::new(),
+        title: String::new(),
+        content: String::new(),
+        authorid: 0,
+    };
+    match state.conn.lock() {
+        Ok(connection) => {
+            let mut statement = match connection.prepare("SELECT * FROM posts WHERE id = ?") {
+                Ok(value) => value,
+                Err(code) => {
+                    return MyResponse::Error(code.to_string())
+                }
+            };
+            match statement.bind((1, id)){
+                Ok(_) => println!("user table query succeed"),
+                Err(code) => {
+                    return MyResponse::Error(code.to_string())
+                }
+            };
+            match statement.next() {
+                Ok(_) => {
+                    post.id = match statement.read::<i64, _>("id") {
+                        Ok(result) => result,
+                        Err(code) => {
+                            return MyResponse::Redirect(Redirect::to("/"))
+                        }
+                    };
+                    post.create_date = match statement.read::<String, _>("createdDate"){
+                        Ok(result) => result,
+                        Err(code) => {
+                            return MyResponse::Redirect(Redirect::to("/"))
+                        }
+                    };
+                    post.title = match statement.read::<String, _>("title"){
+                        Ok(result) => result,
+                        Err(code) => {
+                            return MyResponse::Redirect(Redirect::to("/"))
+                        }
+                    };
+                    post.content = match statement.read::<String, _>("body"){
+                        Ok(result) => result,
+                        Err(code) => {
+                            return MyResponse::Redirect(Redirect::to("/"))
+                        }
+                    };
+                    post.authorid = match statement.read::<i64, _>("authorid") {
+                        Ok(result) => result,
+                        Err(code) => {
+                            return MyResponse::Redirect(Redirect::to("/"))
+                        }
+                    }
+                }
+
+                Err(code) => {
+                    println!("SQL querty succeed in selecting the post of user id = {}", id);
+                }
+            };
+
+        },
+        Err(_) => {
+            return MyResponse::Html(RawHtml("mutex lock is failed".to_string()));
+        }
+    }
+
+    if post.id == 0 {
+        return MyResponse::Redirect(Redirect::to("/"));
+    }
+    let mut userid = 0;
     match user.0 {
         Some(user) => {
-            context.insert("user", &user);
-            context.insert("errors", &errors);
-            match TEMPLATES.render("edit-post.html", &context) {
-                Ok(result) => MyResponse::Html(RawHtml(result)),
-                Err(err_code) => {
-                    return MyResponse::Error(err_code.to_string())
-                }
-            }
+            userid = user.userid;
         }
         None => {
-            return MyResponse::Redirect(Redirect::to("/"))
+            return MyResponse::Redirect(Redirect::to("/"));
+        }
+    }
+
+    if userid != post.authorid {
+        return MyResponse::Redirect(Redirect::to("/"));
+    }
+    context.insert("errors", &errors);
+    context.insert("post", &post);
+    context.insert("user", &true);
+    match TEMPLATES.render("edit-post.html", &context) {
+        Ok(result) => MyResponse::Html(RawHtml(result)),
+        Err(err_code) => {
+            return MyResponse::Error(err_code.to_string())
         }
     }
 }
@@ -505,7 +581,9 @@ fn handle_create_post(user: OptionalUser, state: &State<DbConn>, post: Form<Post
     };
     match user.0 {
         Some(user) => { does_user_exist = true;  context.insert("user", &user); userr = user;},
-        None => {}
+        None => {
+            return MyResponse::Redirect(Redirect::to("/"));
+        }
     }
     if post_form.title.is_empty() || post_form.body.is_empty() {
         errors.push("title is empty or the body is empty. Please fill those".to_string());
@@ -661,6 +739,171 @@ fn handle_create_post(user: OptionalUser, state: &State<DbConn>, post: Form<Post
 
     MyResponse::Redirect(Redirect::to(format!("/post/{}", post_id)))
 
+}
+
+#[post("/edit-post/<id>", data = "<post>")]
+fn handle_edit_post(id: i64, user: OptionalUser, state: &State<DbConn>, post: Form<PostForm<'_>>) -> MyResponse {
+    let post_form = post.into_inner();
+    let mut context = Context::new();
+    let mut errors = Vec::new();
+    let mut does_user_exist: bool = false;
+    let mut userr = User {
+        userid: 0,
+        username: "".to_string(),
+        exp: 0,
+    };
+    match user.0 {
+        Some(user) => { does_user_exist = true;  context.insert("user", &user); userr = user;},
+        None => {
+            return MyResponse::Redirect(Redirect::to("/"));
+        }
+    }
+    if post_form.title.is_empty() || post_form.body.is_empty() {
+        errors.push("title is empty or the body is empty. Please fill those".to_string());
+        context.insert("errors", &errors);
+        match TEMPLATES.render("create-post.html", &context) {
+            Ok(result) => MyResponse::Html(RawHtml(result)),
+            Err(err_code) =>  MyResponse::Error(err_code.to_string())
+        };
+
+    }
+
+    let sanitized_title = ammonia::clean(&post_form.title);
+    let sanitized_body= ammonia::clean(&post_form.body);
+    if sanitized_title.is_empty() || sanitized_body.is_empty() {
+        errors.push("title is empty or the body is empty. Please fill those".to_string());
+        context.insert("errors", &errors);
+        match TEMPLATES.render("create-post.html", &context) {
+            Ok(result) => MyResponse::Html(RawHtml(result)),
+            Err(err_code) =>  MyResponse::Error(err_code.to_string())
+        };
+
+    }
+
+    let mut post = Post {
+        id: 0,
+        create_date: String::new(),
+        title: String::new(),
+        content: String::new(),
+        authorid: 0,
+    };
+    match state.conn.lock() {
+        Ok(connection) => {
+            let mut statement = match connection.prepare("SELECT * FROM posts WHERE id = ?") {
+                Ok(value) => value,
+                Err(code) => {
+                    return MyResponse::Error(code.to_string())
+                }
+            };
+            match statement.bind((1, id)){
+                Ok(_) => println!("user table query succeed"),
+                Err(code) => {
+                    return MyResponse::Error(code.to_string())
+                }
+            };
+            match statement.next() {
+                Ok(_) => {
+                    post.id = match statement.read::<i64, _>("id") {
+                        Ok(result) => result,
+                        Err(code) => {
+                            return MyResponse::Redirect(Redirect::to("/"))
+                        }
+                    };
+                    post.create_date = match statement.read::<String, _>("createdDate"){
+                        Ok(result) => result,
+                        Err(code) => {
+                            return MyResponse::Redirect(Redirect::to("/"))
+                        }
+                    };
+                    post.title = match statement.read::<String, _>("title"){
+                        Ok(result) => result,
+                        Err(code) => {
+                            return MyResponse::Redirect(Redirect::to("/"))
+                        }
+                    };
+                    post.content = match statement.read::<String, _>("body"){
+                        Ok(result) => result,
+                        Err(code) => {
+                            return MyResponse::Redirect(Redirect::to("/"))
+                        }
+                    };
+                    post.authorid = match statement.read::<i64, _>("authorid") {
+                        Ok(result) => result,
+                        Err(code) => {
+                            return MyResponse::Redirect(Redirect::to("/"))
+                        }
+                    }
+                }
+
+                Err(code) => {
+                    println!("SQL querty succeed in selecting the post of user id = {}", id);
+                }
+            };
+
+        },
+        Err(_) => {
+            return MyResponse::Html(RawHtml("mutex lock is failed".to_string()));
+        }
+    }
+
+    if post.id == 0 {
+        return MyResponse::Redirect(Redirect::to("/"));
+    }
+
+    if userr.userid != post.authorid {
+        return MyResponse::Redirect(Redirect::to("/"));
+    }
+
+    match state.conn.lock() {
+        Ok(connection) => {
+            let mut statement = match connection.prepare("UPDATE posts SET title = ?, body = ? WHERE id = ?") {
+                Ok(value) => value,
+                Err(code) => {
+                    return MyResponse::Error(code.to_string())
+                }
+            };
+            match statement.bind((1, &sanitized_title[..])){
+                Ok(_) => println!("user table query succeed"),
+                Err(code) => {
+                    return MyResponse::Error(code.to_string())
+                }
+            };
+
+            match statement.bind((2, &sanitized_body[..])){
+                Ok(_) => println!("user table query succeed"),
+                Err(code) => {
+                    return MyResponse::Error(code.to_string())
+                }
+            };
+
+            match statement.bind((3, id)){
+                Ok(_) => println!("user table query succeed"),
+                Err(code) => {
+                    return MyResponse::Error(code.to_string())
+                }
+            };
+
+            match statement.next() {
+                Ok(sqlite::State::Done) => {
+                    // Return a success response (e.g., redirect)
+                    println!("post table query succeed");
+                }
+                Ok(sqlite::State::Row) => {
+                    // INSERT statements should not return rows. This is unexpected.
+                    eprintln!("Warning: UPDATE statement returned rows unexpectedly.");
+                }
+                Err(code) => {
+                    return MyResponse::Error(code.to_string());
+                }
+            };
+
+
+        },
+        Err(_) => {
+            return MyResponse::Html(RawHtml("mutex lock is failed".to_string()));
+        }
+    }
+    MyResponse::Redirect(Redirect::to(format!("/post/{}", post.id)))
 }
 
 #[post("/login", data = "<form>")]
@@ -874,7 +1117,7 @@ pub fn handle_login(state: &State<DbConn>, form: Form<LoginForm<'_>>, jar: &Cook
 
                 let mut cookie = Cookie::new("ourSimpleApp", token);
                 cookie.set_http_only(true);  // Prevent JavaScript access to cookie
-                cookie.set_secure(false);     // Only send over HTTPS
+                cookie.set_secure(true);     // Only send over HTTPS
                 cookie.set_same_site(SameSite::Strict); // Restrict cookie sending across sites
                 cookie.set_max_age(Duration::hours(24));
                 // let encoding_key = EncodingKey::from_secret(jwt_secret.0.as_bytes());
@@ -919,6 +1162,313 @@ pub fn handle_login(state: &State<DbConn>, form: Form<LoginForm<'_>>, jar: &Cook
     MyResponse::Redirect(Redirect::to("/"))
 }
 
+#[post("/register", data = "<form>")]
+pub fn register(state: &State<DbConn>, form: Form<LoginForm<'_>>, jar: &CookieJar<'_>) -> MyResponse {
+    let mut errors: Vec<String> = Vec::new();
+    let mut context = Context::new();
+    let mut u = String::new();
+    let mut p = String::new();
+
+    let mut username: &str;
+    let mut password: &str;
+
+    let mut jwp_user_username = String::new();
+    let mut jwp_user_password = String::new();
+    let mut jwp_user_userid = 0;
+
+    match state.conn.lock() {
+        Ok(connection) => {
+            let signin_form = form.into_inner();
+            username = if signin_form.username.is_empty() {
+                ""
+            } else {
+                signin_form.username
+            };
+            password = if signin_form.password.is_empty() {
+                ""
+            } else {
+                signin_form.password
+            };
+
+            username = username.trim();
+            password = password.trim();
+
+            if username.len() > 32 {
+                errors.push(String::from("The amount of characters in the name should not exceed 32"));
+            }
+
+            if password.len() > 32 {
+                errors.push(String::from("The amount of characters in the password should not exceed 32"));
+            }
+
+            if username == "" {
+                errors.push(String::from("Invalid Username / Password"));
+            }
+
+            if password == "" {
+                errors.push(String::from("Invalid Username / Password"));
+            }
+
+            let re = Regex::new(r"/^[a-zA-Z0-9]+$/").unwrap();
+            if re.is_match(username) {
+                errors.push(String::from("regex failed"));
+            }
+            println!("username: {}\npassword: {}\n", username, password);
+            if errors.len() > 0 {
+                context.insert("errors", &errors);
+                let crap = match TEMPLATES.render("homepage.html", &context) {
+                    Ok(cp) =>  cp,
+                    Err(cp) => return MyResponse::Error(cp.to_string())
+                };
+                return MyResponse::Html(RawHtml(crap))
+            }
+
+            let mut user_in_question_statement = match connection.prepare("SELECT * FROM users WHERE username = ?") {
+                Ok(value) => value,
+                Err(code) => {
+                    eprintln!("{}",code.to_string());
+                    errors.push(String::from("Invalid Username / Password".to_string()));
+                    context.insert("errors", &errors);
+                    let crap = match TEMPLATES.render("homepage.html", &context) {
+                        Ok(cp) =>  cp,
+                        Err(cp) => return MyResponse::Error(cp.to_string())
+                    };
+                    return MyResponse::Html(RawHtml(crap))
+                }
+            };
+            match user_in_question_statement.bind((1, username)){
+                Ok(_) => println!("user table query succeed"),
+                Err(code) => {
+                    eprintln!("{}", code.to_string());
+                    errors.push(String::from("Invalid Username / Password".to_string()));
+                    context.insert("errors", &errors);
+                    let crap = match TEMPLATES.render("homepage.html", &context) {
+                        Ok(cp) =>  cp,
+                        Err(cp) => return MyResponse::Error(cp.to_string())
+                    };
+                    return MyResponse::Html(RawHtml(crap))
+                }
+            };
+
+            match user_in_question_statement.next() {
+                Ok(_res)=> {
+                    u = match user_in_question_statement.read::<String, _>("username") {
+                        Ok(result) => { println!("{}",result); result },
+                        Err(code) => {
+                            println!("expected behaviour");
+                            "".to_string()
+                        }
+                    };
+
+                },
+                Err(code) => {
+                    eprintln!("{}, err from user in question statement.next",code.to_string());
+                    errors.push("Invalid Username / Password".to_string());
+                    context.insert("errors", &errors);
+                    let crap = match TEMPLATES.render("homepage.html", &context){
+                        Ok(result) => result,
+                        Err(code) => {
+                            return MyResponse::Error(code.to_string())
+
+                        }
+                    };
+                    return MyResponse::Html(RawHtml(crap));
+                }
+
+            }
+
+            if u == username {
+                errors.push("Username is already taken".to_string());
+                context.insert("errors", &errors);
+                let crap = match TEMPLATES.render("homepage.html", &context){
+                    Ok(result) => return MyResponse::Html(RawHtml(result)),
+                    Err(code) => {
+                        return MyResponse::Error(code.to_string())
+                    }
+                };
+            }
+
+        },
+        Err(_) => return MyResponse::Error("mutex lock failed".to_string())
+    };
+
+    let plain_password = password.clone();
+
+
+    match bcrypt::hash(plain_password, DEFAULT_COST) {
+        Ok(hashed_password) => {
+            match state.conn.lock() {
+                Ok(connection) => {
+                    let mut statement = match connection.prepare("INSERT INTO users (username, password) VALUES (?, ?)") {
+                        Ok(value) => value,
+                        Err(code) => {
+                            return MyResponse::Error(code.to_string())
+                        }
+                    };
+                    match statement.bind((1, username)){
+                        Ok(_) => println!("user table query succeed"),
+                        Err(code) => {
+                            return MyResponse::Error(code.to_string())
+                        }
+                    };
+
+                    match statement.bind((2, hashed_password.as_str())){
+                        Ok(_) => println!("user table query succeed"),
+                        Err(code) => {
+                            return MyResponse::Error(code.to_string())
+                        }
+                    };
+                    let mut last_inserted_row_id = 0;
+                    match statement.next() {
+                        Ok(_) => {
+                            // Return a success response (e.g., redirect)
+                            println!("updating user table query succeed");
+                        }
+                        Err(code) => {
+                            return MyResponse::Error(code.to_string());
+                        }
+                    };
+
+                    let mut statement = match connection.prepare("SELECT last_insert_rowid()") {
+                        Ok(value) => value,
+                        Err(code) => {
+                            return MyResponse::Error(code.to_string())
+                        }
+                    };
+
+                    match statement.next() {
+                        Ok(_) => {
+                            last_inserted_row_id = match statement.read::<i64, _>(0) {
+                                Ok(row_id) => row_id,
+                                Err(code) => { return MyResponse::Error(code.to_string()) }
+                            };
+                        }
+                        Err(code) => {
+                            return MyResponse::Error(code.to_string());
+                        }
+                    }
+
+                    let mut statement = match connection.prepare("SELECT * FROM users where ROWID = ?") {
+                        Ok(value) => value,
+                        Err(code) => {
+                            return MyResponse::Error(code.to_string())
+                        }
+                    };
+                    match statement.bind((1, last_inserted_row_id)){
+                        Ok(_) => println!("user table query succeed"),
+                        Err(code) => {
+                            return MyResponse::Error(code.to_string())
+                        }
+                    };
+
+                    match statement.next() {
+                        Ok(_) => {
+                            jwp_user_username = match statement.read::<String, _>("username") {
+                                Ok(result) => result,
+                                Err(_code) => {
+                                    errors.push(String::from("Invalid Username / Password"));
+                                    context.insert("errors", &errors);
+                                    let crap = match TEMPLATES.render("login.html", &context) {
+                                        Ok(cp) =>  cp,
+                                        Err(cp) => return MyResponse::Error(cp.to_string())
+                                    };
+                                    return MyResponse::Html(RawHtml(crap))
+                                }
+                            };
+                            jwp_user_password = match statement.read::<String, _>("password"){
+                                Ok(result) => result,
+                                Err(_code) => {
+                                    errors.push(String::from("Invalid Username / Password"));
+                                    context.insert("errors", &errors);
+                                    let crap = match TEMPLATES.render("login.html", &context) {
+                                        Ok(cp) =>  cp,
+                                        Err(cp) => return MyResponse::Error(cp.to_string())
+                                    };
+                                    return MyResponse::Html(RawHtml(crap))
+                                }
+                            };
+                            jwp_user_userid = match statement.read::<i64, _>("id"){
+                                Ok(result) => result,
+                                Err(_code) => {
+                                    errors.push(String::from("Invalid Username / Password"));
+                                    context.insert("errors", &errors);
+                                    let crap = match TEMPLATES.render("login.html", &context) {
+                                        Ok(cp) =>  cp,
+                                        Err(cp) => return MyResponse::Error(cp.to_string())
+                                    };
+                                    return MyResponse::Html(RawHtml(crap))
+                                }
+                            };
+                        }
+                        Err(code) => {
+                            return MyResponse::Error(code.to_string());
+                        }
+                    };
+                }
+                Err(_) => {
+                    return MyResponse::Error("locking mutex failed".to_string());
+                }
+            }
+
+            let expiration = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_secs()
+                + 60 * 60 * 24; // 24 hours
+
+            let claims = Claims {
+                exp: expiration as usize,
+                sky_color: "Blue".to_string(),
+                userid: jwp_user_userid.try_into().expect("something wrong in userid"),
+                username: jwp_user_username.to_string(),
+            };
+            let jwtkey = match dotenv::var("JWTSECRET"){
+                Ok(result) => result,
+                Err(code) => {
+                    errors.push(String::from(code.to_string()));
+                    context.insert("errors", &errors);
+                    let crap = match TEMPLATES.render("login.html", &context) {
+                        Ok(cp) =>  cp,
+                        Err(cp) => return MyResponse::Error(cp.to_string())
+                    };
+                    return MyResponse::Html(RawHtml(crap))
+                }
+            };
+
+            let header = jsonwebtoken::Header::default();
+            let token = encode(&header, &claims, &EncodingKey::from_secret(jwtkey.as_bytes()))
+                .expect("Error creating jwt token");
+
+            let mut cookie = Cookie::new("ourSimpleApp", token);
+            cookie.set_http_only(true);  // Prevent JavaScript access to cookie
+            cookie.set_secure(true);     // Only send over HTTPS
+            cookie.set_same_site(SameSite::Strict); // Restrict cookie sending across sites
+            cookie.set_max_age(Duration::hours(24));
+            // let encoding_key = EncodingKey::from_secret(jwt_secret.0.as_bytes());
+            jar.add(cookie);
+
+        },
+        Err(err) => {
+            errors.push(String::from(err.to_string()));
+            let crap = match TEMPLATES.render("login.html", &context){
+                Ok(result) => result,
+                Err(code) => {
+                    errors.push(String::from(code.to_string()));
+                    context.insert("errors", &errors);
+                    let crap = match TEMPLATES.render("login.html", &context) {
+                        Ok(cp) =>  cp,
+                        Err(cp) => return MyResponse::Error(cp.to_string())
+                    };
+                    return MyResponse::Html(RawHtml(crap))
+                }
+            };
+            println!("password is wrong");
+            return MyResponse::Html(RawHtml(crap));
+        }
+    }
+    MyResponse::Redirect(Redirect::to("/"))
+}
+
 #[get("/logout")]
 fn logout(user: OptionalUser, cookie_jar: &CookieJar<'_>) -> MyResponse {
     if let Some(user) = user.0 {
@@ -931,7 +1481,8 @@ fn logout(user: OptionalUser, cookie_jar: &CookieJar<'_>) -> MyResponse {
 
 pub fn stage(conn: Connection) -> AdHoc {
     AdHoc::on_ignite("Managed Hit Count", |rocket| async {
-        rocket.mount("/", routes![index, render_login, handle_login, logout, get_post, delete_post, create_post, handle_create_post])
+        rocket.mount("/", routes![index, render_login, handle_login, logout, get_post, delete_post, create_post, handle_create_post,
+                                              edit_post, handle_edit_post, register])
             .manage(DbConn {
                 conn: Mutex::new(conn)
             })

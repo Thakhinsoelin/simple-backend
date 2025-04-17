@@ -2009,6 +2009,7 @@ dependencies = [
  "dotenv",
  "jsonwebtoken",
  "lazy_static",
+ "regex",
  "reqwest",
  "rocket",
  "serde",
