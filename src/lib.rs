@@ -224,7 +224,11 @@ pub fn get_post(id: i64, user: OptionalUser, state: &State<DbConn>) -> MyRespons
         authorid: author_id
     };
 
-    
+    if let Some(user) = user.0 {
+        context.insert("post", &post);
+        context.insert("user", &user);
+        context.insert("username", user.username.as_str());
+    };
     match TEMPLATES.render("single-post.html", &context) {
         Ok(result) => MyResponse::Html(RawHtml(result)),
         Err(err_code) => {
