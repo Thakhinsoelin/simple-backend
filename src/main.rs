@@ -7,7 +7,7 @@ use rocket::serde::Deserialize;
 use serde_json::Value;
 use simple_backend;
 use sqlite::{self, Connection};
-
+use std::env;
 
 #[derive(Debug, Deserialize)]
 pub struct Holiday {
@@ -102,10 +102,19 @@ fn rocket() -> _ {
     conns.execute(query).expect("Failed to execute table");
     conns.execute(query2).expect("Failed to execute table2");
 
+    let port: u16 = env::var("PORT")
+        .unwrap_or_else(|_| "8000".into())
+        .parse()
+        .expect("PORT must be a number");
+
+    let figment = rocket::Config::figment()
+        .merge(("address", "0.0.0.0"))
+        .merge(("port", port));
+
     rocket::build()
     .attach(simple_backend::stage(conns))
     .mount("/", FileServer::from("files"))
-    .configure(rocket::Config::figment().merge(("address", "0.0.0.0")))
+    .configure(figment)
     
 }
 
